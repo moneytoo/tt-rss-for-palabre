@@ -1,0 +1,28 @@
+apply plugin: 'com.android.application'
+
+repositories {
+    maven {url "http://levelupstudio.com/maven2"}
+}
+
+android {
+    compileSdkVersion 27
+    defaultConfig {
+        applicationId "com.brouken.palabre.ttrss"
+        minSdkVersion 14
+        targetSdkVersion 27
+        versionCode 3
+        versionName "0.3"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation 'com.levelup.palabre.api:palabre-api:1.1.0'
+    implementation 'com.android.volley:volley:1.1.0'
+}

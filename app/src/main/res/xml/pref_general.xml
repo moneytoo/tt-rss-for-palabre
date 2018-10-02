@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <PreferenceCategory
+        android:title="Server">
+
+        <EditTextPreference
+            android:key="pref_url"
+            android:title="URL"
+            android:inputType="textUri"
+            android:defaultValue="https://example.com/tt-rss"/>
+
+        <SwitchPreference
+            android:key="pref_single_user_mode"
+            android:title="Single user mode"
+            android:disableDependentsState="true"/>
+
+        <EditTextPreference
+            android:key="pref_login"
+            android:title="User"
+            android:defaultValue="admin"
+            android:inputType="textVisiblePassword|textNoSuggestions"
+            android:dependency="pref_single_user_mode"/>
+
+        <EditTextPreference
+            android:key="pref_password"
+            android:title="Password"
+            android:inputType="textPassword"
+            android:dependency="pref_single_user_mode"/>
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="Basic authentication">
+
+        <SwitchPreference
+            android:key="pref_basic_auth"
+            android:title="Use Basic authentication" />
+
+        <EditTextPreference
+            android:key="pref_http_login"
+            android:title="Login"
+            android:inputType="textVisiblePassword|textNoSuggestions"
+            android:dependency="pref_basic_auth" />
+
+        <EditTextPreference
+            android:key="pref_http_password"
+            android:title="Password"
+            android:inputType="textPassword"
+            android:dependency="pref_basic_auth"/>
+
+    </PreferenceCategory>
+
+</PreferenceScreen>
