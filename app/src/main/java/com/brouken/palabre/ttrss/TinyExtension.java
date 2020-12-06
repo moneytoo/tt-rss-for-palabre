@@ -32,6 +32,8 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class TinyExtension extends PalabreExtension {
 
@@ -223,7 +225,7 @@ public class TinyExtension extends PalabreExtension {
         // Get ids of all unread articles (also save them on first run)
         int skip = 0;
         do {
-            JSONObject response = getResponse(buildHeadlinesUnreadRequestJSON(skip, firstRun));
+            JSONObject response = getResponse(buildHeadlinesUnreadRequestJSON(skip));
             articleIds = processHeadlines(response.getJSONArray("content"));
             unreadArticleIds.addAll(articleIds);
             skip += articleIds.size();
@@ -317,14 +319,15 @@ public class TinyExtension extends PalabreExtension {
         return json;
     }
 
-    JSONObject buildHeadlinesUnreadRequestJSON(int skip, boolean firstRun) throws JSONException {
+    JSONObject buildHeadlinesUnreadRequestJSON(int skip) throws JSONException {
         JSONObject json = new JSONObject();
         json.put("op", "getHeadlines");
         json.put("sid", mSid);
         json.put("feed_id", -4);
         json.put("view_mode", "unread");
-        json.put("show_content", firstRun);
+        json.put("show_content", true);
         json.put("show_excerpt", false);
+        json.put("include_attachments", true);
         json.put("limit", ARTICLES_IN_RESPONSE);
         json.put("skip", skip);
         return json;
@@ -337,6 +340,7 @@ public class TinyExtension extends PalabreExtension {
         json.put("feed_id", feedId);
         json.put("view_mode", "all_articles");
         json.put("show_content", true);
+        json.put("include_attachments", true);
         json.put("limit", 10);
         //json.put("since_id", mLastArticleId);
         return json;
@@ -349,6 +353,7 @@ public class TinyExtension extends PalabreExtension {
         json.put("feed_id", -4);
         json.put("view_mode", "all_articles");
         json.put("show_content", true);
+        json.put("include_attachments", true);
         json.put("since_id", mLastArticleId);
         json.put("limit", ARTICLES_IN_RESPONSE);
         json.put("skip", skip);
@@ -523,6 +528,38 @@ public class TinyExtension extends PalabreExtension {
                     .content(fullContent)
                     .date(new Date(date))
                     .saved(marked);
+
+            // Check if there is an image
+            if (!jsonHeadline.isNull("attachments")) {
+                JSONArray jsonAttachments = jsonHeadline.getJSONArray("attachments");
+                String image = "";
+                int largestWidth = 0;
+                for (int j = 0; j < jsonAttachments.length(); j++) {
+                    JSONObject jsonAttachment = (JSONObject) jsonAttachments.get(j);
+                    if (!jsonAttachment.isNull("content_url")) {
+                        if (image == "")
+                            image = jsonAttachment.getString("content_url");
+                        if (!jsonHeadline.isNull("width")) {
+                            int width = jsonAttachment.getInt("width");
+                            if (width > largestWidth) {
+                                largestWidth = width;
+                                image = jsonAttachment.getString("content_url");
+                            }
+                        }
+                    }
+                }
+                if (image != "") {
+                    article.setImage(image);
+                } else {
+                    if (!jsonHeadline.isNull("content")) {
+                        Pattern p = Pattern.compile("(?<=src=\")(.*?)(?=\")|(?<=src=')(.*?)(?=')");
+                        Matcher matcher = p.matcher(jsonHeadline.getString("content"));
+                        if (matcher.find()){
+                            article.setImage(matcher.group(0));
+                        }
+                    }
+                }
+            }
 
             article.setSourceId(Source.getByUniqueId(this, Integer.toString(feedId)).getId());
 
