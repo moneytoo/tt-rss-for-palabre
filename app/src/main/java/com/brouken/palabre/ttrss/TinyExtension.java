@@ -399,8 +399,12 @@ public class TinyExtension extends PalabreExtension {
             @Override
             public int compare(JSONObject o1, JSONObject o2) {
                 try {
-                    Integer order1 = o1.getInt("order_id");
-                    Integer order2 = o2.getInt("order_id");
+                    Integer order1 = 0;
+                    if (o1.has("order_id"))
+                        order1 = o1.getInt("order_id");
+                    Integer order2 = 0;
+                    if (o2.has("order_id"))
+                        order2 = o2.getInt("order_id");
                     return  order1.compareTo(order2);
                 } catch (JSONException e) {
                     e.printStackTrace();
@@ -507,11 +511,11 @@ public class TinyExtension extends PalabreExtension {
     List<String> processHeadlines(JSONArray jsonHeadlines) throws JSONException {
         List<Article> articles = new ArrayList<>();
         List<String> articleIds = new ArrayList<>();
+        log("Processing headlines");
 
         for (int i = 0; i < jsonHeadlines.length(); i++) {
             JSONObject jsonHeadline = (JSONObject) jsonHeadlines.get(i);
-            // TODO: This could be log spamming
-            log("ARTICLE: " + jsonHeadline.toString());
+            //log("ARTICLE: " + jsonHeadline.toString());
 
             final int id = jsonHeadline.getInt("id");
             articleIds.add(Integer.toString(id));
