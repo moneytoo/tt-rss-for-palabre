@@ -205,6 +205,7 @@ public class TinyExtension extends PalabreExtension {
     }
 
     void getFeeds() throws InterruptedException, ExecutionException, TimeoutException, JSONException {
+        // TODO: Nested categories may cause this to double up on feeds
         for (Integer categoryId : mCategories) {
             JSONObject response = getResponse(buildFeedsRequestJSON(categoryId));
             processFeeds(response.getJSONArray("content"));
@@ -232,10 +233,12 @@ public class TinyExtension extends PalabreExtension {
         } while (articleIds.size() > 0);
 
         //showProgress();
+        // TODO: This makes it jump from 25 to 50. Perhaps some progress in the above loop?
         publishUpdateStatus(new ExtensionUpdateStatus().progress(50));
 
         // Update read state of articles viewed outside
         if (!firstRun) {
+            // TODO: This is looking through every article on the device, read or not, and seeing if it's unread. Perhaps shorten with a direct check somehow?
             List<Article> savedArticles = Article.getAll(this);
             for (Article savedArticle : savedArticles) {
                 boolean isRead = !unreadArticleIds.contains(savedArticle.getUniqueId());
@@ -248,11 +251,13 @@ public class TinyExtension extends PalabreExtension {
             }
         }
         //showProgress();
+        // TODO: Same as above, jumps from 50 to 75, maybe add progress in the loop?
         publishUpdateStatus(new ExtensionUpdateStatus().progress(75));
 
         // Get an extra few articles on first run (10 per feed)
         if (firstRun) {
             for (Integer feedId : mFeeds) {
+                // TODO: We grabbed all unread articles before, this is just going to overlap those unless there happens to be some read articles that are new. Perhaps change to read?
                 JSONObject response = getResponse(buildHeadlinesFeedRequestJSON(feedId));
                 processHeadlines(response.getJSONArray("content"));
                 //showProgress();
@@ -261,12 +266,14 @@ public class TinyExtension extends PalabreExtension {
             // Get all new articles since previous sync
             skip = 0;
             do {
+                // TODO: We grabbed all unread articles before, this is just going to overlap those with the read articles, too. Perhaps change to read?
                 JSONObject response = getResponse(buildHeadlinesRequestJSON(skip));
                 articleIds = processHeadlines(response.getJSONArray("content"));
                 skip += articleIds.size();
             } while (articleIds.size() > 0);
         }
 
+        // TODO: Move more granular numbers into the above
         publishUpdateStatus(new ExtensionUpdateStatus().progress(95));
     }
 
@@ -326,6 +333,7 @@ public class TinyExtension extends PalabreExtension {
         json.put("feed_id", -4);
         json.put("view_mode", "unread");
         json.put("show_content", true);
+        // TODO: We might want the excerpt here
         json.put("show_excerpt", false);
         json.put("include_attachments", true);
         json.put("limit", ARTICLES_IN_RESPONSE);
@@ -391,8 +399,12 @@ public class TinyExtension extends PalabreExtension {
             @Override
             public int compare(JSONObject o1, JSONObject o2) {
                 try {
-                    Integer order1 = o1.getInt("order_id");
-                    Integer order2 = o2.getInt("order_id");
+                    Integer order1 = 0;
+                    if (o1.has("order_id"))
+                        order1 = o1.getInt("order_id");
+                    Integer order2 = 0;
+                    if (o2.has("order_id"))
+                        order2 = o2.getInt("order_id");
                     return  order1.compareTo(order2);
                 } catch (JSONException e) {
                     e.printStackTrace();
@@ -499,14 +511,16 @@ public class TinyExtension extends PalabreExtension {
     List<String> processHeadlines(JSONArray jsonHeadlines) throws JSONException {
         List<Article> articles = new ArrayList<>();
         List<String> articleIds = new ArrayList<>();
+        log("Processing headlines");
 
         for (int i = 0; i < jsonHeadlines.length(); i++) {
             JSONObject jsonHeadline = (JSONObject) jsonHeadlines.get(i);
-            log("ARTICLE: " + jsonHeadline.toString());
+            //log("ARTICLE: " + jsonHeadline.toString());
 
             final int id = jsonHeadline.getInt("id");
             articleIds.add(Integer.toString(id));
 
+            // TODO: Why would we skip just because content is empty? We should do a check just below before setting fullContent, and if not, set to ""
             if (!jsonHeadline.has("content"))
                 continue;
 
@@ -561,6 +575,7 @@ public class TinyExtension extends PalabreExtension {
                 }
             }
 
+            // TODO: What does this do? If it's the feed ID, can it be done outside the loop to speed things up?
             article.setSourceId(Source.getByUniqueId(this, Integer.toString(feedId)).getId());
 
             articles.add(article);
@@ -595,6 +610,7 @@ public class TinyExtension extends PalabreExtension {
     void savePreferences() {
         SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
         SharedPreferences.Editor editor = sharedPreferences.edit();
+        // TODO: If the app crashes or is closed, sync will have to start over. Perhaps do this inside the fetch loops after a processArticle call? Also, how will this work if unread is grabbed before read?
         editor.putInt("lastArticleId", mLastArticleId);
         editor.apply();
     }
