@@ -52,9 +52,6 @@ public class TinyExtension extends PalabreExtension {
 
     List<Source> mPreviousSources;
 
-    //float mProgress;
-    //float mProgressStep;
-
     String prefUrl;
     boolean prefSingleUserMode = false;
     String prefLogin;
@@ -142,6 +139,7 @@ public class TinyExtension extends PalabreExtension {
             mFeeds = new ArrayList<>();
 
             loadPreferences();
+            log("Last article ID: " + mLastArticleId);
             init();
 
             fetchAll();
@@ -213,6 +211,11 @@ public class TinyExtension extends PalabreExtension {
         processFeedsCleanup();
     }
 
+    float incrementProgress(float progress) {
+        publishUpdateStatus(new ExtensionUpdateStatus().progress(Math.round(progress)));
+        return progress;
+    }
+
     void getHeadlines() throws JSONException, InterruptedException, ExecutionException, TimeoutException {
         //log("getHeadlines");
 
@@ -220,28 +223,49 @@ public class TinyExtension extends PalabreExtension {
         List<String> unreadArticleIds = new ArrayList<>();
         List<String> articleIds;
 
-        //mProgress = 10f;
-        //mProgressStep = 90f / (mFeeds.size() + 1f);
+        // Determine progress counter
+        float progress = 25;
+        List<Article> savedArticles = Article.getAll(this);
+        JSONObject unreadResponse = getResponse(buildUnreadCountRequestJSON());
+        float unreadCount = unreadResponse.getJSONObject("content").getInt("unread");
+        float feedCount = mFeeds.size();
+        float savedCount = savedArticles.size();
+        float progressIncrease = 1;
+        if (firstRun) {
+            // Progress is number of unread, feedCount
+            if (unreadCount > ARTICLES_IN_RESPONSE)
+                progressIncrease = (95 - progress) / ((unreadCount / ARTICLES_IN_RESPONSE) + feedCount);
+            else
+                progressIncrease = (95 - progress) + feedCount;
+        } else {
+            // Progress is number of unread, number of saved, number new articles (assume less than 200, so 1)
+            if (unreadCount > ARTICLES_IN_RESPONSE)
+                progressIncrease = (95 - progress) / ((unreadCount / ARTICLES_IN_RESPONSE) + (savedCount/1000) + 1);
+            else
+                progressIncrease = (95 - progress) + savedCount + 1;
+        }
+        log("Progress - pi:" + progressIncrease + " uc:" + unreadCount + " fc:" + feedCount + " sc:" + savedCount);
 
         // Get ids of all unread articles (also save them on first run)
+        log("Fetching unread.");
         int skip = 0;
-        do {
-            JSONObject response = getResponse(buildHeadlinesUnreadRequestJSON(skip));
-            articleIds = processHeadlines(response.getJSONArray("content"));
-            unreadArticleIds.addAll(articleIds);
-            skip += articleIds.size();
-        } while (articleIds.size() > 0);
-
-        //showProgress();
-        // TODO: This makes it jump from 25 to 50. Perhaps some progress in the above loop?
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(50));
+        if (unreadCount > 0) {
+            do {
+                JSONObject response = getResponse(buildHeadlinesUnreadRequestJSON(skip, firstRun));
+                articleIds = processHeadlines(response.getJSONArray("content"), firstRun);
+                unreadArticleIds.addAll(articleIds);
+                skip += articleIds.size();
+                progress = incrementProgress(progress+progressIncrease);
+            } while (articleIds.size() > 0);
+        }
+        log("Finished fetching unread.");
 
         // Update read state of articles viewed outside
         if (!firstRun) {
-            // TODO: This is looking through every article on the device, read or not, and seeing if it's unread. Perhaps shorten with a direct check somehow?
-            List<Article> savedArticles = Article.getAll(this);
+            log("Updating read state.");
             for (Article savedArticle : savedArticles) {
                 boolean isRead = !unreadArticleIds.contains(savedArticle.getUniqueId());
+                progress = incrementProgress(progress+progressIncrease);
 
                 if (savedArticle.isRead() == isRead)
                     continue;
@@ -249,32 +273,31 @@ public class TinyExtension extends PalabreExtension {
                 savedArticle.setRead(isRead);
                 savedArticle.save(this);
             }
+            log("Finished updating read state.");
         }
-        //showProgress();
-        // TODO: Same as above, jumps from 50 to 75, maybe add progress in the loop?
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(75));
 
         // Get an extra few articles on first run (10 per feed)
         if (firstRun) {
+            log("Grabbing 10 from each feed.");
             for (Integer feedId : mFeeds) {
-                // TODO: We grabbed all unread articles before, this is just going to overlap those unless there happens to be some read articles that are new. Perhaps change to read?
                 JSONObject response = getResponse(buildHeadlinesFeedRequestJSON(feedId));
-                processHeadlines(response.getJSONArray("content"));
-                //showProgress();
+                processHeadlines(response.getJSONArray("content"), true);
+                progress = incrementProgress(progress+progressIncrease);
             }
+            log("Finished grabbing 10 from each feed.");
         } else {
             // Get all new articles since previous sync
+            log("Getting new articles since previous sync.");
             skip = 0;
             do {
                 // TODO: We grabbed all unread articles before, this is just going to overlap those with the read articles, too. Perhaps change to read?
                 JSONObject response = getResponse(buildHeadlinesRequestJSON(skip));
-                articleIds = processHeadlines(response.getJSONArray("content"));
+                articleIds = processHeadlines(response.getJSONArray("content"), true);
                 skip += articleIds.size();
             } while (articleIds.size() > 0);
+            progress = incrementProgress(progress+progressIncrease);
+            log("Finished getting new articles since previous sync.");
         }
-
-        // TODO: Move more granular numbers into the above
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(95));
     }
 
     void updateArticles(List<String> articles, boolean starredMode, boolean marked) throws JSONException, InterruptedException, ExecutionException, TimeoutException {
@@ -302,10 +325,19 @@ public class TinyExtension extends PalabreExtension {
         return json.getJSONObject("content").getString("session_id");
     }
 
+    JSONObject buildUnreadCountRequestJSON() throws JSONException {
+        JSONObject json = new JSONObject();
+        json.put("op", "getUnread");
+        json.put("sid", mSid);
+        //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildUnreadCountRequestJSON.json");
+        return json;
+    }
+
     JSONObject buildConfigRequestJSON() throws JSONException {
         JSONObject json = new JSONObject();
         json.put("op", "getConfig");
         json.put("sid", mSid);
+        //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildConfigRequestJSON.json");
         return json;
     }
 
@@ -314,6 +346,7 @@ public class TinyExtension extends PalabreExtension {
         json.put("op", "getCategories");
         json.put("sid", mSid);
         json.put("unread_only", false);
+        //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildCategoriesRequestJSON.json");
         return json;
     }
 
@@ -323,21 +356,22 @@ public class TinyExtension extends PalabreExtension {
         json.put("sid", mSid);
         json.put("cat_id", categoryId);
         json.put("unread_only", false);
+        //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildFeedsRequestJSON.json");
         return json;
     }
 
-    JSONObject buildHeadlinesUnreadRequestJSON(int skip) throws JSONException {
+    JSONObject buildHeadlinesUnreadRequestJSON(int skip, boolean firstRun) throws JSONException {
         JSONObject json = new JSONObject();
         json.put("op", "getHeadlines");
         json.put("sid", mSid);
         json.put("feed_id", -4);
         json.put("view_mode", "unread");
-        json.put("show_content", true);
-        // TODO: We might want the excerpt here
+        json.put("show_content", firstRun);
         json.put("show_excerpt", false);
-        json.put("include_attachments", true);
+        json.put("include_attachments", firstRun);
         json.put("limit", ARTICLES_IN_RESPONSE);
         json.put("skip", skip);
+        //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildHeadlinesUnreadRequestJSON.json");
         return json;
     }
 
@@ -348,9 +382,10 @@ public class TinyExtension extends PalabreExtension {
         json.put("feed_id", feedId);
         json.put("view_mode", "all_articles");
         json.put("show_content", true);
+        json.put("show_excerpt", false);
         json.put("include_attachments", true);
         json.put("limit", 10);
-        //json.put("since_id", mLastArticleId);
+        //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildHeadlinesFeedRequestJSON.json");
         return json;
     }
 
@@ -361,10 +396,12 @@ public class TinyExtension extends PalabreExtension {
         json.put("feed_id", -4);
         json.put("view_mode", "all_articles");
         json.put("show_content", true);
+        json.put("show_excerpt", false);
         json.put("include_attachments", true);
         json.put("since_id", mLastArticleId);
         json.put("limit", ARTICLES_IN_RESPONSE);
         json.put("skip", skip);
+        //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildHeadlinesRequestJSON.json");
         return json;
     }
 
@@ -378,6 +415,7 @@ public class TinyExtension extends PalabreExtension {
         json.put("field", starredMode ? 0 : 2);
         json.put("mode", marked ? 1 : 0);
 
+        //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildArticleUpdateRequestJSON.json");
         return json;
     }
 
@@ -508,10 +546,10 @@ public class TinyExtension extends PalabreExtension {
         }
     }
 
-    List<String> processHeadlines(JSONArray jsonHeadlines) throws JSONException {
+    List<String> processHeadlines(JSONArray jsonHeadlines, boolean fullProcess) throws JSONException {
         List<Article> articles = new ArrayList<>();
         List<String> articleIds = new ArrayList<>();
-        log("Processing headlines");
+        log("Processing headlines full=" + fullProcess);
 
         for (int i = 0; i < jsonHeadlines.length(); i++) {
             JSONObject jsonHeadline = (JSONObject) jsonHeadlines.get(i);
@@ -520,8 +558,7 @@ public class TinyExtension extends PalabreExtension {
             final int id = jsonHeadline.getInt("id");
             articleIds.add(Integer.toString(id));
 
-            // TODO: Why would we skip just because content is empty? We should do a check just below before setting fullContent, and if not, set to ""
-            if (!jsonHeadline.has("content"))
+            if (!fullProcess)
                 continue;
 
             final String title = jsonHeadline.getString("title");
@@ -614,11 +651,5 @@ public class TinyExtension extends PalabreExtension {
         editor.putInt("lastArticleId", mLastArticleId);
         editor.apply();
     }
-
-    /*void showProgress() {
-        mProgress += mProgressStep;
-        //log("progress=" + mProgress);
-        publishUpdateStatus(new ExtensionUpdateStatus().progress((int) mProgress));
-    }*/
 
 }
