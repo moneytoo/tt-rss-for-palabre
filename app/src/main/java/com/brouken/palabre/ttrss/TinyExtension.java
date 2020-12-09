@@ -53,8 +53,7 @@ public class TinyExtension extends PalabreExtension {
     int mLastArticleId;
     float mProgress;
 
-    ExecutorService mExecutorService;
-    int mThreadCount = 1;
+    int mThreadCount = 8;
     List<String> mUnreadArticleIds = new ArrayList<>();
 
 
@@ -143,8 +142,6 @@ public class TinyExtension extends PalabreExtension {
         publishUpdateStatus(new ExtensionUpdateStatus().start());
 
         try {
-            mExecutorService = Executors.newFixedThreadPool(mThreadCount);
-
             mCategories = new ArrayList<>();
             mFeeds = new ArrayList<>();
 
@@ -182,14 +179,14 @@ public class TinyExtension extends PalabreExtension {
 
         JSONObject response = getResponse(buildAuthRequestJSON());
         mSid = getSid(response);
+        mProgress = 0;
 
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(5));
+        incrementProgress(5);
         getConfig();
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(10));
+        incrementProgress(5);
         getCategories();
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(15));
+        incrementProgress(5);
         getFeeds();
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(25));
         getHeadlines();
 
         savePreferences();
@@ -213,11 +210,31 @@ public class TinyExtension extends PalabreExtension {
     }
 
     void getFeeds() throws InterruptedException, ExecutionException, TimeoutException, JSONException {
-        // TODO: Nested categories may cause this to double up on feeds
+        float progressIncrease = (float) 10 / mCategories.size();
+        log("Feed progress - pi:" + progressIncrease + " ms:" + mCategories.size());
+        log("Fetching feeds.");
+        ExecutorService executorService = Executors.newFixedThreadPool(mThreadCount);
         for (Integer categoryId : mCategories) {
-            JSONObject response = getResponse(buildFeedsRequestJSON(categoryId));
-            processFeeds(response.getJSONArray("content"));
+            final int placement = categoryId;
+            final float placementIncrease = progressIncrease;
+            executorService.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        log("Thread processing for: " + placement);
+                        JSONObject response = getResponse(buildFeedsRequestJSON(placement));
+                        processFeeds(response.getJSONArray("content"));
+                        incrementProgress(placementIncrease);
+                    } catch (Exception e) {
+                        log(e.toString());
+                    }
+                }
+            });
         }
+        executorService.shutdown();
+        while (!executorService.isTerminated()) { }
+        log("Thread processing complete.");
+        log("Finished fetching feeds.");
         processFeedsCleanup();
     }
 
@@ -226,21 +243,6 @@ public class TinyExtension extends PalabreExtension {
         int displayProgress = Math.round(mProgress);
         log("Progress:" + displayProgress);
         publishUpdateStatus(new ExtensionUpdateStatus().progress(displayProgress));
-    }
-
-    float getTotalCount(JSONArray content) {
-        float count = 0;
-        try {
-            for (int i = 0; i < content.length(); i++) {
-                JSONObject feed = (JSONObject) content.get(i);
-                if (!feed.isNull("updated") && feed.isNull("kind")) {
-                    count += feed.getInt("counter");
-                }
-            }
-        } catch (Exception e) {
-            log(e.toString());
-        }
-        return count;
     }
 
     void getHeadlines() throws JSONException, InterruptedException, ExecutionException, TimeoutException {
@@ -258,30 +260,28 @@ public class TinyExtension extends PalabreExtension {
         //   Subsequent runs
         //     Each call to unread feed (unreadCount / ARTICLES_IN_RESPONSE)
         //     Updating read/unread on existing articles (savedCount/500)
-        //     Pulling new articles ((totalCount - savedCount) / ARTICLES_IN_RESPONSE)
-        mProgress = 25;
+        //     Pulling new articles (assume 3 spaces since there is no way to calculate number of runs)
         List<Article> savedArticles = Article.getAll(this);
         JSONObject unreadResponse = getResponse(buildUnreadCountRequestJSON());
         float unreadCount = unreadResponse.getJSONObject("content").getInt("unread");
-        JSONObject totalResponse = getResponse(buildTotalCountRequestJSON());
-        float totalCount = getTotalCount(totalResponse.getJSONArray("content"));
         float feedCount = mFeeds.size();
         float savedCount = savedArticles.size();
         float progressIncrease = 1;
         if (firstRun) {
             progressIncrease = (95 - mProgress) / ((unreadCount / ARTICLES_IN_RESPONSE) + feedCount);
         } else {
-            progressIncrease = (95 - mProgress) / ((unreadCount / ARTICLES_IN_RESPONSE) + (savedCount/500) + ((totalCount - savedCount) / ARTICLES_IN_RESPONSE));
+            progressIncrease = (95 - mProgress) / ((unreadCount / ARTICLES_IN_RESPONSE) + (savedCount/500) + 3);
         }
-        log("Progress - pi:" + progressIncrease + " uc:" + unreadCount + " fc:" + feedCount + " sc:" + savedCount + " tc:" + totalCount);
+        log("Progress - pi:" + progressIncrease + " uc:" + unreadCount + " fc:" + feedCount + " sc:" + savedCount);
         // Get ids of all unread articles (also save them on first run)
         log("Fetching unread.");
         if (unreadCount > 0) {
             float numRuns = unreadCount / ARTICLES_IN_RESPONSE;
+            ExecutorService executorService = Executors.newFixedThreadPool(mThreadCount);
             for (int i = 0; i < numRuns; i++) {
                 final int placement = i;
                 final float placementIncrease = progressIncrease;
-                mExecutorService.execute(new Runnable() {
+                executorService.execute(new Runnable() {
                     @Override
                     public void run() {
                         try {
@@ -298,8 +298,8 @@ public class TinyExtension extends PalabreExtension {
                     }
                 });
             }
-            mExecutorService.shutdown();
-            while (!mExecutorService.isTerminated()) { }
+            executorService.shutdown();
+            while (!executorService.isTerminated()) { }
             log("Thread processing complete.");
         }
         log("Finished fetching unread.");
@@ -309,18 +309,18 @@ public class TinyExtension extends PalabreExtension {
             log("Updating read state.");
             int count = 0;
             for (Article savedArticle : savedArticles) {
-                boolean isRead = !mUnreadArticleIds.contains(savedArticle.getUniqueId());
-
-                if (savedArticle.isRead() == isRead)
-                    continue;
-
-                savedArticle.setRead(isRead);
-                savedArticle.save(this);
                 count++;
                 if (count == 500) {
                     incrementProgress(progressIncrease);
                     count = 0;
                 }
+
+                boolean isRead = !mUnreadArticleIds.contains(savedArticle.getUniqueId());
+                if (savedArticle.isRead() == isRead)
+                    continue;
+
+                savedArticle.setRead(isRead);
+                savedArticle.save(this);
             }
             log("Finished updating read state.");
         }
@@ -328,18 +328,34 @@ public class TinyExtension extends PalabreExtension {
         // Get an extra few articles on first run (10 per feed)
         if (firstRun) {
             log("Grabbing 10 from each feed.");
+            ExecutorService executorService = Executors.newFixedThreadPool(mThreadCount);
             for (Integer feedId : mFeeds) {
-                JSONObject response = getResponse(buildHeadlinesFeedRequestJSON(feedId));
-                processHeadlines(response.getJSONArray("content"), true);
-                incrementProgress(progressIncrease);
+                final int placement = feedId;
+                final float placementIncrease = progressIncrease;
+                executorService.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            int skip = placement * ARTICLES_IN_RESPONSE;
+                            log("Thread processing for: " + placement);
+                            JSONObject response = getResponse(buildHeadlinesFeedRequestJSON(placement));
+                            processHeadlines(response.getJSONArray("content"), true);
+                            incrementProgress(placementIncrease);
+                        } catch (Exception e) {
+                            log(e.toString());
+                        }
+                    }
+                });
             }
+            executorService.shutdown();
+            while (!executorService.isTerminated()) { }
+            log("Thread processing complete.");
             log("Finished grabbing 10 from each feed.");
         } else {
             // Get all new articles since previous sync
             log("Getting new articles since previous sync.");
             int skip = 0;
             do {
-                // TODO: We grabbed all unread articles before, this is just going to overlap those with the read articles, too. Perhaps change to read?
                 JSONObject response = getResponse(buildHeadlinesRequestJSON(skip));
                 articleIds = processHeadlines(response.getJSONArray("content"), true);
                 skip += articleIds.size();
@@ -379,15 +395,6 @@ public class TinyExtension extends PalabreExtension {
         json.put("op", "getUnread");
         json.put("sid", mSid);
         //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildUnreadCountRequestJSON.json");
-        return json;
-    }
-
-    JSONObject buildTotalCountRequestJSON() throws JSONException {
-        JSONObject json = new JSONObject();
-        json.put("op", "getCounters");
-        json.put("sid", mSid);
-        json.put("output_mode", "f");
-        //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildTotalCountRequestJSON.json");
         return json;
     }
 
