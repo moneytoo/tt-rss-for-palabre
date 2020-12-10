@@ -30,6 +30,8 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
@@ -49,6 +51,11 @@ public class TinyExtension extends PalabreExtension {
     List<Integer> mCategories;
     List<Integer> mFeeds;
     int mLastArticleId;
+    float mProgress;
+
+    int mThreadCount = 8;
+    List<String> mUnreadArticleIds = new ArrayList<>();
+
 
     List<Source> mPreviousSources;
 
@@ -172,14 +179,14 @@ public class TinyExtension extends PalabreExtension {
 
         JSONObject response = getResponse(buildAuthRequestJSON());
         mSid = getSid(response);
+        mProgress = 0;
 
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(5));
+        incrementProgress(5);
         getConfig();
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(10));
+        incrementProgress(5);
         getCategories();
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(15));
+        incrementProgress(5);
         getFeeds();
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(25));
         getHeadlines();
 
         savePreferences();
@@ -203,28 +210,57 @@ public class TinyExtension extends PalabreExtension {
     }
 
     void getFeeds() throws InterruptedException, ExecutionException, TimeoutException, JSONException {
-        // TODO: Nested categories may cause this to double up on feeds
+        float progressIncrease = (float) 10 / mCategories.size();
+        log("Feed progress - pi:" + progressIncrease + " ms:" + mCategories.size());
+        log("Fetching feeds.");
+        ExecutorService executorService = Executors.newFixedThreadPool(mThreadCount);
         for (Integer categoryId : mCategories) {
-            JSONObject response = getResponse(buildFeedsRequestJSON(categoryId));
-            processFeeds(response.getJSONArray("content"));
+            final int placement = categoryId;
+            final float placementIncrease = progressIncrease;
+            executorService.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        log("Thread processing for: " + placement);
+                        JSONObject response = getResponse(buildFeedsRequestJSON(placement));
+                        processFeeds(response.getJSONArray("content"));
+                        incrementProgress(placementIncrease);
+                    } catch (Exception e) {
+                        log(e.toString());
+                    }
+                }
+            });
         }
+        executorService.shutdown();
+        while (!executorService.isTerminated()) { }
+        log("Thread processing complete.");
+        log("Finished fetching feeds.");
         processFeedsCleanup();
     }
 
-    float incrementProgress(float progress) {
-        publishUpdateStatus(new ExtensionUpdateStatus().progress(Math.round(progress)));
-        return progress;
+    void incrementProgress(float increment) {
+        mProgress += increment;
+        int displayProgress = Math.round(mProgress);
+        log("Progress:" + displayProgress);
+        publishUpdateStatus(new ExtensionUpdateStatus().progress(displayProgress));
     }
 
     void getHeadlines() throws JSONException, InterruptedException, ExecutionException, TimeoutException {
         //log("getHeadlines");
 
         final boolean firstRun = mLastArticleId <= 0;
-        List<String> unreadArticleIds = new ArrayList<>();
         List<String> articleIds;
 
+        mUnreadArticleIds.clear();
+
         // Determine progress counter
-        float progress = 25;
+        //   First run
+        //     Each call to unread feed (unreadCount / ARTICLES_IN_RESPONSE)
+        //     Each grab of 10 of a feed (feedCount)
+        //   Subsequent runs
+        //     Each call to unread feed (unreadCount / ARTICLES_IN_RESPONSE)
+        //     Updating read/unread on existing articles (savedCount/500)
+        //     Pulling new articles (assume 3 spaces since there is no way to calculate number of runs)
         List<Article> savedArticles = Article.getAll(this);
         JSONObject unreadResponse = getResponse(buildUnreadCountRequestJSON());
         float unreadCount = unreadResponse.getJSONObject("content").getInt("unread");
@@ -232,41 +268,54 @@ public class TinyExtension extends PalabreExtension {
         float savedCount = savedArticles.size();
         float progressIncrease = 1;
         if (firstRun) {
-            // Progress is number of unread, feedCount
-            if (unreadCount > ARTICLES_IN_RESPONSE)
-                progressIncrease = (95 - progress) / ((unreadCount / ARTICLES_IN_RESPONSE) + feedCount);
-            else
-                progressIncrease = (95 - progress) + feedCount;
+            progressIncrease = (95 - mProgress) / ((unreadCount / ARTICLES_IN_RESPONSE) + feedCount);
         } else {
-            // Progress is number of unread, number of saved, number new articles (assume less than 200, so 1)
-            if (unreadCount > ARTICLES_IN_RESPONSE)
-                progressIncrease = (95 - progress) / ((unreadCount / ARTICLES_IN_RESPONSE) + (savedCount/1000) + 1);
-            else
-                progressIncrease = (95 - progress) + savedCount + 1;
+            progressIncrease = (95 - mProgress) / ((unreadCount / ARTICLES_IN_RESPONSE) + (savedCount/500) + 3);
         }
         log("Progress - pi:" + progressIncrease + " uc:" + unreadCount + " fc:" + feedCount + " sc:" + savedCount);
-
         // Get ids of all unread articles (also save them on first run)
         log("Fetching unread.");
-        int skip = 0;
         if (unreadCount > 0) {
-            do {
-                JSONObject response = getResponse(buildHeadlinesUnreadRequestJSON(skip, firstRun));
-                articleIds = processHeadlines(response.getJSONArray("content"), firstRun);
-                unreadArticleIds.addAll(articleIds);
-                skip += articleIds.size();
-                progress = incrementProgress(progress+progressIncrease);
-            } while (articleIds.size() > 0);
+            float numRuns = unreadCount / ARTICLES_IN_RESPONSE;
+            ExecutorService executorService = Executors.newFixedThreadPool(mThreadCount);
+            for (int i = 0; i < numRuns; i++) {
+                final int placement = i;
+                final float placementIncrease = progressIncrease;
+                executorService.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            int skip = placement * ARTICLES_IN_RESPONSE;
+                            log("Thread processing for: " + skip);
+                            JSONObject response = getResponse(buildHeadlinesUnreadRequestJSON(skip, firstRun));
+                            List<String> articleIds = processHeadlines(response.getJSONArray("content"), firstRun);
+                            mUnreadArticleIds.addAll(articleIds);
+                            skip += articleIds.size();
+                            incrementProgress(placementIncrease);
+                        } catch (Exception e) {
+                            log(e.toString());
+                        }
+                    }
+                });
+            }
+            executorService.shutdown();
+            while (!executorService.isTerminated()) { }
+            log("Thread processing complete.");
         }
         log("Finished fetching unread.");
 
         // Update read state of articles viewed outside
         if (!firstRun) {
             log("Updating read state.");
+            int count = 0;
             for (Article savedArticle : savedArticles) {
-                boolean isRead = !unreadArticleIds.contains(savedArticle.getUniqueId());
-                progress = incrementProgress(progress+progressIncrease);
+                count++;
+                if (count == 500) {
+                    incrementProgress(progressIncrease);
+                    count = 0;
+                }
 
+                boolean isRead = !mUnreadArticleIds.contains(savedArticle.getUniqueId());
                 if (savedArticle.isRead() == isRead)
                     continue;
 
@@ -279,23 +328,39 @@ public class TinyExtension extends PalabreExtension {
         // Get an extra few articles on first run (10 per feed)
         if (firstRun) {
             log("Grabbing 10 from each feed.");
+            ExecutorService executorService = Executors.newFixedThreadPool(mThreadCount);
             for (Integer feedId : mFeeds) {
-                JSONObject response = getResponse(buildHeadlinesFeedRequestJSON(feedId));
-                processHeadlines(response.getJSONArray("content"), true);
-                progress = incrementProgress(progress+progressIncrease);
+                final int placement = feedId;
+                final float placementIncrease = progressIncrease;
+                executorService.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            int skip = placement * ARTICLES_IN_RESPONSE;
+                            log("Thread processing for: " + placement);
+                            JSONObject response = getResponse(buildHeadlinesFeedRequestJSON(placement));
+                            processHeadlines(response.getJSONArray("content"), true);
+                            incrementProgress(placementIncrease);
+                        } catch (Exception e) {
+                            log(e.toString());
+                        }
+                    }
+                });
             }
+            executorService.shutdown();
+            while (!executorService.isTerminated()) { }
+            log("Thread processing complete.");
             log("Finished grabbing 10 from each feed.");
         } else {
             // Get all new articles since previous sync
             log("Getting new articles since previous sync.");
-            skip = 0;
+            int skip = 0;
             do {
-                // TODO: We grabbed all unread articles before, this is just going to overlap those with the read articles, too. Perhaps change to read?
                 JSONObject response = getResponse(buildHeadlinesRequestJSON(skip));
                 articleIds = processHeadlines(response.getJSONArray("content"), true);
                 skip += articleIds.size();
+                incrementProgress(progressIncrease);
             } while (articleIds.size() > 0);
-            progress = incrementProgress(progress+progressIncrease);
             log("Finished getting new articles since previous sync.");
         }
     }
