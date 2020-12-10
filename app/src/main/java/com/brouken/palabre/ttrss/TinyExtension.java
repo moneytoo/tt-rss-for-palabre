@@ -124,10 +124,11 @@ public class TinyExtension extends PalabreExtension {
 
     @Override
     protected void onReadArticles(List<String> articles, boolean read) {
-        init();
         log("onReadArticles " + articles.size());
-
         try {
+            if (prefUrl == null || prefUrl.isEmpty())
+                loadPreferences();
+            init();
             updateArticles(articles, false, !read);
         } catch (Exception e) {
             onReadArticlesFailed(articles, read);
@@ -732,6 +733,7 @@ public class TinyExtension extends PalabreExtension {
     }
 
     void loadPreferences() throws Exception {
+        log("loadPreferences");
         SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
         mLastArticleId = sharedPreferences.getInt("lastArticleId", -1);
 
