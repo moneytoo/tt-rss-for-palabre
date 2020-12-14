@@ -215,8 +215,8 @@ public class TinyExtension extends PalabreExtension {
         log("Fetching feeds.");
         ExecutorService executorService = Executors.newFixedThreadPool(mThreadCount);
         for (Integer categoryId : mCategories) {
-            final int placement = categoryId;
             final float placementIncrease = progressIncrease;
+            final int placement = categoryId;
             executorService.execute(new Runnable() {
                 @Override
                 public void run() {
@@ -243,6 +243,23 @@ public class TinyExtension extends PalabreExtension {
         int displayProgress = Math.round(mProgress);
         log("Progress:" + displayProgress);
         publishUpdateStatus(new ExtensionUpdateStatus().progress(displayProgress));
+    }
+
+    void getSpecialArticles() {
+        // Since Palabre removes read articles, we constantly have to resync saved/archived
+        try {
+            log("Getting saved/archived articles.");
+            int skip = 0;
+            List<String> articleIds;
+            do {
+                JSONObject response = getResponse(buildHeadlinesCategoryRequestJSON(skip));
+                articleIds = processHeadlines(response.getJSONArray("content"), true);
+                skip += articleIds.size();
+            } while (articleIds.size() > 0);
+            log("Finished getting saved/archived articles.");
+        } catch (Exception e) {
+            log(e.toString());
+        }
     }
 
     void getHeadlines() throws JSONException, InterruptedException, ExecutionException, TimeoutException {
@@ -363,6 +380,8 @@ public class TinyExtension extends PalabreExtension {
             } while (articleIds.size() > 0);
             log("Finished getting new articles since previous sync.");
         }
+
+        getSpecialArticles();
     }
 
     void updateArticles(List<String> articles, boolean starredMode, boolean marked) throws JSONException, InterruptedException, ExecutionException, TimeoutException {
@@ -437,6 +456,21 @@ public class TinyExtension extends PalabreExtension {
         json.put("limit", ARTICLES_IN_RESPONSE);
         json.put("skip", skip);
         //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildHeadlinesUnreadRequestJSON.json");
+        return json;
+    }
+
+    JSONObject buildHeadlinesCategoryRequestJSON(int skip) throws JSONException {
+        JSONObject json = new JSONObject();
+        json.put("op", "getHeadlines");
+        json.put("sid", mSid);
+        json.put("feed_id", -1);
+        json.put("view_mode", "all_articles");
+        json.put("show_content", true);
+        json.put("show_excerpt", false);
+        json.put("include_attachments", true);
+        json.put("limit", ARTICLES_IN_RESPONSE);
+        json.put("skip", skip);
+        //log("curl -d '" + json.toString() + "' " + mUrlApi + " > /tmp/ttrss/buildHeadlinesCategoryRequestJSON.json");
         return json;
     }
 
@@ -526,11 +560,16 @@ public class TinyExtension extends PalabreExtension {
             Category category = new Category()
                     .uniqueId(Integer.toString(id))
                     .title(title);
-
             mCategories.add(id);
-
             categories.add(category);
         }
+
+        mCategories.add(-1);
+        categories.add(
+            new Category()
+                .uniqueId("-1")
+                .title("Saved Articles")
+        );
 
         List<Category> previousCategories = Category.getAll(this);
 
@@ -539,7 +578,7 @@ public class TinyExtension extends PalabreExtension {
         // Delete categories no longer on server
         for (Category previousCategory : previousCategories) {
             int previousId = Integer.parseInt(previousCategory.getUniqueId());
-            if (!mCategories.contains(previousId))
+            if (previousId != -1 && !mCategories.contains(previousId))
                 previousCategory.delete(this);
         }
     }
@@ -677,7 +716,6 @@ public class TinyExtension extends PalabreExtension {
                 }
             }
 
-            // TODO: What does this do? If it's the feed ID, can it be done outside the loop to speed things up?
             article.setSourceId(Source.getByUniqueId(this, Integer.toString(feedId)).getId());
 
             articles.add(article);
